@@ -1,6 +1,7 @@
 #!/usr/bin/env lua
 --[[
 Copyright (C) 2023-2026 CachyOS
+(Modified for standard Arch Linux / AUR Integration)
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,7 +17,7 @@ You should have received a copy of the GNU General Public License along
 with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 --]]
-local pacman, pmconfig, pmroot, cachedir, sync
+local pmconfig, pmroot, cachedir, sync
 
 ---@alias hookAlias {pre_install: string?, post_install: string?, post_remove: string?, pre_remove: string?, conditional_packages: string?}
 
@@ -113,8 +114,66 @@ end
 ---@param pkgs string
 ---@return number?
 local function pacman_handle(action, pkgs)
-    local cmd = table.concat({ pacman, action, pkgs }, " ")
+    -- Define unique sandbox user and directory for isolated AUR building
+    local build_user = "chwd_builder"
+    local build_dir = "/tmp/" .. build_user
+    local wrapper_path = "/tmp/chwd_aur_executor_" .. os.time() .. ".sh"
+
+    -- Construct the bash wrapper for privilege isolation and cleanup
+    local wrapper_script = string.format([[
+#!/bin/bash
+BUILD_USER="%s"
+BUILD_DIR="%s"
+ACTION="%s"
+PKGS="%s"
+CACHEDIR="%s"
+PMROOT="%s"
+PMCONFIG="%s"
+SUDO_TEMP_FILE="/etc/sudoers.d/99_chwd_builder_temp"
+
+cleanup() {
+    rm -f "$SUDO_TEMP_FILE"
+    if id "$BUILD_USER" &>/dev/null; then
+        userdel -f -r "$BUILD_USER" &>/dev/null
+    fi
+    rm -rf "$BUILD_DIR"
+}
+trap cleanup EXIT INT TERM ERR
+
+useradd -m -d "$BUILD_DIR" -s /bin/bash "$BUILD_USER"
+echo "$BUILD_USER ALL=(ALL) NOPASSWD: /usr/bin/pacman, /usr/bin/makepkg" > "$SUDO_TEMP_FILE"
+chmod 440 "$SUDO_TEMP_FILE"
+
+if command -v paru &> /dev/null; then
+    HELPER="paru"
+elif command -v yay &> /dev/null; then
+    HELPER="yay"
+else
+    sudo -u "$BUILD_USER" bash -c '
+        cd "$BUILD_DIR"
+        sudo pacman -S --needed --noconfirm git base-devel
+        git clone https://aur.archlinux.org/yay.git
+        cd yay
+        makepkg -si --noconfirm
+    '
+    HELPER="yay"
+fi
+
+sudo -H -u "$BUILD_USER" $HELPER $ACTION $PKGS --noconfirm --cachedir "$CACHEDIR" -r "$PMROOT" --config "$PMCONFIG"
+]], build_user, build_dir, action, pkgs, cachedir, pmroot, pmconfig)
+
+    -- Write and execute the temporary wrapper script
+    local f = io.open(wrapper_path, "w")
+    if not f then die("ERROR: Could not write temporary executor script.") end
+    f:write(wrapper_script)
+    f:close()
+
+    local cmd = "bash " .. wrapper_path
     local _, _, code = os.execute(cmd)
+
+    -- Clean up the executor file
+    -- os.execute("rm -f " .. wrapper_path)
+
     return code
 end
 
@@ -311,7 +370,7 @@ local function main()
     cachedir = get_opt_argument(options, "cachedir", "/var/cache/pacman/pkg")
     pmroot = get_opt_argument(options, "pmroot", "/")
     pmconfig = get_opt_argument(options, "pmconfig", "/etc/pacman.conf")
-    pacman = table.concat({ "pacman --noconfirm", "--cachedir", cachedir, "-r", pmroot, "--config", pmconfig }, " ")
+    
     local profile_name = get_opt_argument(options, "profile")
     local path = get_opt_argument(options, "path")
 
