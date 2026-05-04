@@ -120,7 +120,7 @@ local function pacman_handle(action, pkgs)
 
     local wrapper_script = string.format([[
 #!/bin/bash
-set -e # 遇到错误立即中止，防止连锁反应
+set -e 
 
 BUILD_USER="%s"
 BUILD_DIR="%s"
@@ -132,21 +132,20 @@ PMCONFIG="%s"
 SUDO_TEMP_FILE="/etc/sudoers.d/99_chwd_builder_temp"
 
 cleanup() {
-    set +e # 关闭严苛模式以确保清理逻辑完整执行
+    set +e 
     rm -f "$SUDO_TEMP_FILE"
     if id "$BUILD_USER" &>/dev/null; then
         userdel -f -r "$BUILD_USER" &>/dev/null
     fi
     rm -rf "$BUILD_DIR"
 }
-# 捕获正常退出和所有异常中断
+
 trap cleanup EXIT INT TERM
 
 useradd -m -d "$BUILD_DIR" -s /bin/bash "$BUILD_USER"
 echo "$BUILD_USER ALL=(ALL) NOPASSWD: /usr/bin/pacman, /usr/bin/makepkg" > "$SUDO_TEMP_FILE"
 chmod 440 "$SUDO_TEMP_FILE"
 
-# 强制外层进程也进入沙盒目录，防止污染环境
 cd "$BUILD_DIR"
 
 if command -v paru &> /dev/null; then
@@ -154,7 +153,6 @@ if command -v paru &> /dev/null; then
 elif command -v yay &> /dev/null; then
     HELPER="yay"
 else
-    # 注意这里改用双引号，并转义内部的变量，确保真实路径被成功注入
     sudo -u "$BUILD_USER" bash -c "
         cd \"$BUILD_DIR\"
         sudo pacman -S --needed --noconfirm git base-devel
